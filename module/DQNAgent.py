@@ -28,29 +28,33 @@ class DQNAgent:
         q_values = self.model(state)
         return torch.argmax(q_values).item()
 
+    def sample(self, batch_size):
+        batch = random.sample(self.memory, batch_size)
+        return zip(*batch)
+
     def replay(self, batch_size):
         if len(self.memory) < batch_size:
-            return
-        minibatch = random.sample(self.memory, batch_size)
-        for state, action, reward, next_state, done in minibatch:
-            # print(f"state:\n{state}\nnext_state:\n{next_state}\n\n")
-            # 处理 state 和 next_state 的不同情况
-            if isinstance(state, tuple):
-                state = state[0]  # 提取元组中的第一个元素
-            if isinstance(next_state, tuple):
-                next_state = next_state[0]  # 提取元组中的第一个元素
-            state = np.array(state)
-            state = torch.FloatTensor(state)
-            next_state = torch.FloatTensor(next_state)
-            target = reward
-            if not done:
-                target = (reward + self.gamma * torch.max(self.model(next_state)))
-            target_f = self.model(state)
-            target_f[action] = target
-            target_f = target_f.detach()
-            self.optimizer.zero_grad()
-            loss = F.mse_loss(self.model(state), target_f)
-            loss.backward()
-            self.optimizer.step()
+            batch_size = len(self.memory)
+
+        state_batch, action_batch, reward_batch, next_state_batch, done_batch = self.sample(batch_size)
+        # 将数据转换为tensor
+        state_batch = torch.tensor(np.array(state_batch), dtype=torch.float)
+        action_batch = torch.tensor(action_batch).unsqueeze(1)
+        reward_batch = torch.tensor(reward_batch, dtype=torch.float)
+        next_state_batch = torch.tensor(np.array(next_state_batch), dtype=torch.float)
+        done_batch = torch.tensor(np.float32(done_batch))
+        q_values = self.model(state_batch).gather(dim=1, index=action_batch)  # 计算当前状态(s_t,a)对应的Q(s_t, a)
+        next_q_values = self.model(next_state_batch).max(1)[0].detach()  # 计算下一时刻的状态(s_t_,a)对应的Q值
+        # 计算期望的Q值，对于终止状态，此时done_batch[0]=1, 对应的expected_q_value等于reward
+        expected_q_values = reward_batch + self.gamma * next_q_values * (1 - done_batch)
+        loss = nn.MSELoss()(q_values, expected_q_values.unsqueeze(1))  # 计算均方根损失
+        # 优化更新模型
+        self.optimizer.zero_grad()
+        loss.backward()
+        # clip防止梯度爆炸
+        for param in self.model.parameters():
+            param.grad.data.clamp_(-1, 1)
+        self.optimizer.step()
+
         if self.epsilon > self.epsilon_min:
             self.epsilon *= self.epsilon_decay
